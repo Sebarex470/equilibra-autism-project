@@ -1,0 +1,327 @@
+package com.example.equilibra.presentation
+
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.net.Uri
+import android.os.Bundle
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.telephony.SmsManager
+import android.util.Log
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.app.ActivityCompat
+import androidx.navigation.NavHostController
+import androidx.navigation.compose.*
+import kotlinx.coroutines.delay
+
+class MainActivity : ComponentActivity() {
+    private lateinit var sensorManager: SensorManager
+    private var heartRateSensor: Sensor? = null
+    private var accelerometerSensor: Sensor? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
+        heartRateSensor = sensorManager.getDefaultSensor(Sensor.TYPE_HEART_RATE)
+        accelerometerSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+
+        // Solicitar permisos necesarios
+        val permissions = arrayOf(
+            Manifest.permission.SEND_SMS,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        )
+        ActivityCompat.requestPermissions(this, permissions, 1)
+
+        setContent {
+            AppNavigation(
+                sensorManager = sensorManager,
+                heartRateSensor = heartRateSensor,
+                accelerometerSensor = accelerometerSensor,
+                onVibrate = { duration ->
+                    val vibrator = getSystemService(VIBRATOR_SERVICE) as Vibrator
+                    vibrator.vibrate(
+                        VibrationEffect.createOneShot(duration, VibrationEffect.DEFAULT_AMPLITUDE)
+                    )
+                }
+            )
+        }
+    }
+}
+
+@Composable
+fun AppNavigation(
+    sensorManager: SensorManager,
+    heartRateSensor: Sensor?,
+    accelerometerSensor: Sensor?,
+    onVibrate: (Long) -> Unit
+) {
+    val navController = rememberNavController()
+
+    NavHost(navController = navController, startDestination = "home") {
+        composable("home") { HomeScreen(navController) }
+        composable("monitoring") { MonitoringScreen(sensorManager, heartRateSensor, accelerometerSensor, onVibrate) }
+        composable("sportMode") { SportModeScreen(sensorManager, heartRateSensor, accelerometerSensor) }
+        composable("emergency") { EmergencyScreen() }
+    }
+}
+
+@Composable
+fun HomeScreen(navController: NavHostController) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFFE3F2FD))
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(text = "Bienvenido a Equilibra", fontSize = 16.sp, color = Color.Black)
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Button(onClick = { navController.navigate("monitoring") }) {
+            Text(text = "Ir a Monitoreo", fontSize = 14.sp)
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Button(onClick = { navController.navigate("sportMode") }) {
+            Text(text = "Modo Deporte", fontSize = 14.sp)
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Button(onClick = { navController.navigate("emergency") }) {
+            Text(text = "Botón de Emergencia", fontSize = 10.sp)
+        }
+    }
+}
+
+@Composable
+fun MonitoringScreen(
+    sensorManager: SensorManager,
+    heartRateSensor: Sensor?,
+    accelerometerSensor: Sensor?,
+    onVibrate: (Long) -> Unit
+) {
+    var heartRate by remember { mutableStateOf("No disponible") }
+    var movement by remember { mutableStateOf("Quieto") }
+    var isBreathing by remember { mutableStateOf(false) }
+
+    // Sensor de frecuencia cardíaca
+    DisposableEffect(Unit) {
+        val heartRateListener = object : SensorEventListener {
+            override fun onSensorChanged(event: SensorEvent?) {
+                heartRate = event?.values?.getOrNull(0)?.toInt()?.toString() ?: "No disponible"
+            }
+
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+        }
+
+        heartRateSensor?.let {
+            sensorManager.registerListener(
+                heartRateListener,
+                it,
+                SensorManager.SENSOR_DELAY_NORMAL
+            )
+        }
+
+        onDispose {
+            sensorManager.unregisterListener(heartRateListener)
+        }
+    }
+
+    // Sensor de movimiento
+    DisposableEffect(Unit) {
+        val accelerometerListener = object : SensorEventListener {
+            override fun onSensorChanged(event: SensorEvent?) {
+                movement = if (event != null && event.values.any { it > 2 }) {
+                    "En movimiento"
+                } else {
+                    "Quieto"
+                }
+            }
+
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+        }
+
+        accelerometerSensor?.let {
+            sensorManager.registerListener(
+                accelerometerListener,
+                it,
+                SensorManager.SENSOR_DELAY_NORMAL
+            )
+        }
+
+        onDispose {
+            sensorManager.unregisterListener(accelerometerListener)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFFE3F2FD))
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(text = "Frecuencia cardíaca: $heartRate BPM", fontSize = 10.sp, color = Color.Black)
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(text = "Estado de movimiento: $movement", fontSize = 10.sp, color = Color.Black)
+        Spacer(modifier = Modifier.height(24.dp))
+
+        if (isBreathing) {
+            BreathingGuide(onVibrate = onVibrate, onStop = { isBreathing = false })
+        } else {
+            Button(onClick = { isBreathing = true }) {
+                Text(text = "Iniciar Respiración Guiada", fontSize = 18.sp)
+            }
+        }
+    }
+}
+
+@Composable
+fun BreathingGuide(onVibrate: (Long) -> Unit, onStop: () -> Unit) {
+    var stepText by remember { mutableStateOf("Prepárate") }
+    val transition = rememberInfiniteTransition()
+    val circleSize by transition.animateFloat(
+        initialValue = 100f,
+        targetValue = 200f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 4000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        )
+    )
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            stepText = "Inhala"
+            onVibrate(100)
+            delay(4000)
+
+            stepText = "Exhala"
+            onVibrate(100)
+            delay(4000)
+        }
+    }
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFFE3F2FD))
+            .padding(16.dp)
+    ) {
+        Text(text = stepText, fontSize = 24.sp, color = Color.Black)
+        Spacer(modifier = Modifier.height(16.dp))
+        Box(
+            modifier = Modifier
+                .size(circleSize.dp)
+                .background(Color(0xFF80DEEA), CircleShape)
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Button(onClick = { onStop() }) {
+            Text(text = "Detener", fontSize = 18.sp)
+        }
+    }
+}
+
+@Composable
+fun SportModeScreen(
+    sensorManager: SensorManager,
+    heartRateSensor: Sensor?,
+    accelerometerSensor: Sensor?
+) {
+    var isSportModeActive by remember { mutableStateOf(false) }
+    var heartRate by remember { mutableStateOf("No disponible") }
+    var movement by remember { mutableStateOf("Quieto") }
+
+    DisposableEffect(isSportModeActive) {
+        if (isSportModeActive) {
+            val heartRateListener = object : SensorEventListener {
+                override fun onSensorChanged(event: SensorEvent?) {
+                    val currentHeartRate = event?.values?.getOrNull(0)?.toInt() ?: 0
+                    if (currentHeartRate > 140 && movement == "Quieto") {
+                        sendWhatsAppMessage("Posible crisis detectada: Frecuencia cardíaca elevada.")
+                    }
+                    heartRate = currentHeartRate.toString()
+                }
+
+                override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+            }
+
+            heartRateSensor?.let {
+                sensorManager.registerListener(
+                    heartRateListener,
+                    it,
+                    SensorManager.SENSOR_DELAY_NORMAL
+                )
+            }
+
+            onDispose {
+                sensorManager.unregisterListener(heartRateListener)
+            }
+        }
+        onDispose {}
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFFE3F2FD))
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(text = "Modo Deporte Activo", fontSize = 24.sp, color = Color.Black)
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(text = "Frecuencia cardíaca: $heartRate BPM", fontSize = 18.sp, color = Color.Black)
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Button(onClick = { isSportModeActive = !isSportModeActive }) {
+            Text(text = if (isSportModeActive) "Desactivar" else "Activar")
+        }
+    }
+}
+
+@Composable
+fun EmergencyScreen() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Red.copy(alpha = 0.8f))
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(text = "¡Emergencia!", fontSize = 24.sp, color = Color.White)
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Button(onClick = { sendWhatsAppMessage("Emergencia: Se ha presionado el botón de emergencia.") }) {
+            Text(text = "Enviar Alerta", fontSize = 18.sp)
+        }
+    }
+}
+
+fun sendWhatsAppMessage(message: String) {
+    val uri = Uri.parse("https://api.whatsapp.com/send?phone=+56972298992&text=${Uri.encode(message)}")
+    val intent = Intent(Intent.ACTION_VIEW, uri)
+    intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+}
