@@ -1,0 +1,519 @@
+package com.example.equilibra.presentation
+
+import android.Manifest
+import android.content.ActivityNotFoundException
+import android.content.Context
+import android.content.Intent
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.os.Bundle
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.app.ActivityCompat
+import androidx.navigation.NavHostController
+import androidx.navigation.compose.*
+import com.example.equilibra.R
+import kotlinx.coroutines.delay
+import kotlin.math.sqrt
+
+class MainActivity : ComponentActivity() {
+    private lateinit var sensorManager: SensorManager
+    private var heartRateSensor: Sensor? = null
+    private var accelerometerSensor: Sensor? = null
+    private var gyroscopeSensor: Sensor? = null
+    private lateinit var userAI: UserAI
+    private lateinit var userPreferences: UserPreferences
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
+        heartRateSensor = sensorManager.getDefaultSensor(Sensor.TYPE_HEART_RATE)
+        accelerometerSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        gyroscopeSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+
+        userAI = UserAI()
+        userPreferences = UserPreferences()
+
+        val permissions = arrayOf(
+            Manifest.permission.SEND_SMS,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        )
+        ActivityCompat.requestPermissions(this, permissions, 1)
+
+        setContent {
+            AppNavigation(sensorManager, heartRateSensor, accelerometerSensor, gyroscopeSensor, userAI, userPreferences)
+        }
+    }
+}
+
+class UserAI {
+    private var heartRateData: MutableList<Int> = mutableListOf()
+    private var movementData: MutableList<String> = mutableListOf()
+    private var timeData: MutableList<Long> = mutableListOf()
+
+    fun addData(heartRate: Int, movement: String) {
+        heartRateData.add(heartRate)
+        movementData.add(movement)
+        timeData.add(System.currentTimeMillis())
+    }
+
+    fun predictStressLevel(): Double {
+        if (heartRateData.isEmpty()) return 0.0
+
+        val avgHeartRate = heartRateData.average()
+        val recentMovement = movementData.lastOrNull() ?: "Quieto"
+
+        val baseStress = when {
+            avgHeartRate > 100 && recentMovement == "En movimiento" -> 0.8
+            avgHeartRate > 100 -> 0.6
+            avgHeartRate > 80 && recentMovement == "En movimiento" -> 0.4
+            avgHeartRate > 80 -> 0.3
+            else -> 0.1
+        }
+
+        val heartRateVariability = heartRateData.takeLast(10).let {
+            if (it.size > 1) it.standard_deviation() else 0.0
+        }
+
+        return (baseStress + (heartRateVariability / 200)).coerceIn(0.0, 1.0)
+    }
+
+    fun suggestAction(): String {
+        val stressLevel = predictStressLevel()
+        return when {
+            stressLevel > 0.7 -> "Considera hacer una pausa y realizar ejercicios de respiración."
+            stressLevel > 0.4 -> "Tómate un momento para relajarte y beber agua."
+            else -> "Continúa con tu actividad actual, todo parece estar bien."
+        }
+    }
+
+    private fun List<Int>.standard_deviation(): Double {
+        val mean = this.average()
+        val variance = this.map { (it - mean) * (it - mean) }.average()
+        return sqrt(variance)
+    }
+}
+
+class UserPreferences {
+    private val preferences = mutableMapOf<String, Double>()
+
+    fun updatePreference(activity: String, enjoymentLevel: Double) {
+        preferences[activity] = preferences.getOrDefault(activity, 0.0) * 0.7 + enjoymentLevel * 0.3
+    }
+
+    fun suggestActivity(): String {
+        return preferences.maxByOrNull { it.value }?.key ?: "No hay suficientes datos para sugerir una actividad"
+    }
+}
+
+@Composable
+fun AppNavigation(
+    sensorManager: SensorManager,
+    heartRateSensor: Sensor?,
+    accelerometerSensor: Sensor?,
+    gyroscopeSensor: Sensor?,
+    userAI: UserAI,
+    userPreferences: UserPreferences
+) {
+    val navController = rememberNavController()
+    NavHost(navController, startDestination = "home") {
+        composable("home") { HomeScreen(navController, userAI, userPreferences) }
+        composable("monitoring") { MonitoringScreen(sensorManager, heartRateSensor, accelerometerSensor, gyroscopeSensor, userAI) }
+        composable("pictograms") { PictogramScreen() }
+        composable("sportMode") { SportModeScreen(sensorManager, heartRateSensor, accelerometerSensor, userAI, userPreferences) }
+        composable("emergency") { EmergencyScreen() }
+    }
+}
+
+@Composable
+fun HomeScreen(navController: NavHostController, userAI: UserAI, userPreferences: UserPreferences) {
+    var offsetX by remember { mutableStateOf(0f) }
+    var aiSuggestion by remember { mutableStateOf("") }
+    var activitySuggestion by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        aiSuggestion = userAI.suggestAction()
+        activitySuggestion = userPreferences.suggestActivity()
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFFE3F2FD))
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures { _, dragAmount ->
+                    offsetX += dragAmount
+                    if (offsetX > 300) navController.navigate("monitoring")
+                    if (offsetX < -300) navController.navigate("pictograms")
+                }
+            }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text("Bienvenido a Equilibra", fontSize = 24.sp, color = Color.Black, textAlign = TextAlign.Center)
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("Sugerencia de la IA:", fontSize = 18.sp, color = Color.DarkGray)
+                    Text(aiSuggestion, fontSize = 16.sp, color = Color.Black)
+                }
+            }
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("Actividad sugerida:", fontSize = 18.sp, color = Color.DarkGray)
+                    Text(activitySuggestion, fontSize = 16.sp, color = Color.Black)
+                }
+            }
+
+            Button(
+                onClick = { navController.navigate("monitoring") },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Ir a Monitoreo")
+            }
+
+            Button(
+                onClick = { navController.navigate("pictograms") },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Pictogramas")
+            }
+
+            Button(
+                onClick = { navController.navigate("sportMode") },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Modo Deporte")
+            }
+
+            Button(
+                onClick = { navController.navigate("emergency") },
+                colors = ButtonDefaults.buttonColors(containerColor = Color.Red),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Emergencia", color = Color.White)
+            }
+        }
+    }
+}
+
+@Composable
+fun MonitoringScreen(
+    sensorManager: SensorManager,
+    heartRateSensor: Sensor?,
+    accelerometerSensor: Sensor?,
+    gyroscopeSensor: Sensor?,
+    userAI: UserAI
+) {
+    var isBreathing by remember { mutableStateOf(false) }
+    var heartRate by remember { mutableStateOf("--") }
+    var acceleration by remember { mutableStateOf("x: --, y: --, z: --") }
+    var gyroscope by remember { mutableStateOf("x: --, y: --, z: --") }
+    var movement by remember { mutableStateOf("Quieto") }
+
+    DisposableEffect(Unit) {
+        val heartRateListener = object : SensorEventListener {
+            override fun onSensorChanged(event: SensorEvent?) {
+                event?.let {
+                    val currentHeartRate = it.values[0].toInt()
+                    heartRate = currentHeartRate.toString()
+                    userAI.addData(currentHeartRate, movement)
+                }
+            }
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+        }
+
+        val accelerometerListener = object : SensorEventListener {
+            override fun onSensorChanged(event: SensorEvent?) {
+                event?.let {
+                    acceleration = "x: ${it.values[0]}, y: ${it.values[1]}, z: ${it.values[2]}"
+                    val accelerationMagnitude = sqrt((it.values[0] * it.values[0] + it.values[1] * it.values[1] + it.values[2] * it.values[2]).toDouble()).toFloat()
+                    movement = if (accelerationMagnitude > 10f) "En movimiento" else "Quieto"
+                }
+            }
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+        }
+
+        val gyroscopeListener = object : SensorEventListener {
+            override fun onSensorChanged(event: SensorEvent?) {
+                event?.let {
+                    gyroscope = "x: ${it.values[0]}, y: ${it.values[1]}, z: ${it.values[2]}"
+                }
+            }
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+        }
+
+        heartRateSensor?.let { sensorManager.registerListener(heartRateListener, it, SensorManager.SENSOR_DELAY_NORMAL) }
+        accelerometerSensor?.let { sensorManager.registerListener(accelerometerListener, it, SensorManager.SENSOR_DELAY_NORMAL) }
+        gyroscopeSensor?.let { sensorManager.registerListener(gyroscopeListener, it, SensorManager.SENSOR_DELAY_NORMAL) }
+
+        onDispose {
+            sensorManager.unregisterListener(heartRateListener)
+            sensorManager.unregisterListener(accelerometerListener)
+            sensorManager.unregisterListener(gyroscopeListener)
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text("Monitoreo de Salud", fontSize = 20.sp, color = Color.Black)
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("Frecuencia Cardíaca: $heartRate BPM", fontSize = 16.sp)
+        Spacer(modifier = Modifier.height(8.dp))
+        Text("Acelerómetro: $acceleration", fontSize = 16.sp)
+        Spacer(modifier = Modifier.height(8.dp))
+        Text("Giroscopio: $gyroscope", fontSize = 16.sp)
+        Spacer(modifier = Modifier.height(16.dp))
+        if (isBreathing) {
+            BreathingGuide { isBreathing = false }
+        } else {
+            Button(onClick = { isBreathing = true }) {
+                Text("Iniciar Respiración Guiada")
+            }
+        }
+    }
+}
+
+@Composable
+fun BreathingGuide(onStop: () -> Unit) {
+    var stepText by remember { mutableStateOf("Prepárate") }
+    val transition = rememberInfiniteTransition()
+    val circleSize by transition.animateFloat(
+        initialValue = 100f,
+        targetValue = 200f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 4000),
+            repeatMode = RepeatMode.Reverse
+        )
+    )
+    LaunchedEffect(Unit) {
+        while (true) {
+            stepText = "Inhala"
+            delay(4000)
+            stepText = "Exhala"
+            delay(4000)
+        }
+    }
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(stepText, fontSize = 24.sp, color = Color.Black)
+        Box(
+            modifier = Modifier
+                .size(circleSize.dp)
+                .background(Color(0xFF80DEEA), CircleShape)
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Button(onClick = { onStop() }) { Text("Detener") }
+    }
+}
+
+@Composable
+fun PictogramScreen() {
+    val pictograms = listOf(
+        R.drawable.comida to "Tengo Hambre",
+        R.drawable.sed to "Tengo Sed",
+        R.drawable.bano to "Necesito el Baño",
+        R.drawable.dormir to "Tengo Sueño",
+        R.drawable.dolor to "Me Duele",
+        R.drawable.feliz to "Estoy Feliz",
+        R.drawable.triste to "Estoy Triste",
+        R.drawable.miedo to "Tengo Miedo",
+        R.drawable.calor to "Tengo Calor",
+        R.drawable.frio to "Tengo Frío",
+        R.drawable.ayuda to "Necesito Ayuda",
+        R.drawable.musica to "Quiero Música",
+        R.drawable.jugar to "Quiero Jugar",
+        R.drawable.salir to "Quiero Salir",
+        R.drawable.medicina to "Necesito Medicina"
+    )
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        items(pictograms) { (image, text) ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(100.dp)
+                    .background(Color.White, RoundedCornerShape(8.dp))
+                    .padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Image(
+                    painter = painterResource(id = image),
+                    contentDescription = text,
+                    modifier = Modifier
+                        .size(84.dp)
+                        .padding(end = 16.dp)
+                )
+                Text(text, fontSize = 18.sp, color = Color.Black)
+            }
+        }
+    }
+}
+
+@Composable
+fun SportModeScreen(
+    sensorManager: SensorManager,
+    heartRateSensor: Sensor?,
+    accelerometerSensor: Sensor?,
+    userAI: UserAI,
+    userPreferences: UserPreferences
+) {
+    var isSportModeActive by remember { mutableStateOf(false) }
+    var heartRate by remember { mutableStateOf("--") }
+    var movement by remember { mutableStateOf("Quieto") }
+    var enjoymentLevel by remember { mutableStateOf(0.0) }
+
+    DisposableEffect(isSportModeActive) {
+        if (isSportModeActive) {
+            val heartRateListener = object : SensorEventListener {
+                override fun onSensorChanged(event: SensorEvent?) {
+                    event?.let {
+                        val currentHeartRate = it.values[0].toInt()
+                        heartRate = currentHeartRate.toString()
+                        userAI.addData(currentHeartRate, movement)
+                    }
+                }
+                override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+            }
+
+            val accelerometerListener = object : SensorEventListener {
+                override fun onSensorChanged(event: SensorEvent?) {
+                    event?.let {
+                        val acceleration = sqrt((it.values[0] * it.values[0] + it.values[1] * it.values[1] + it.values[2] * it.values[2]).toDouble()).toFloat()
+                        movement = if (acceleration > 10f) "En movimiento" else "Quieto"
+                        userAI.addData(heartRate.toIntOrNull() ?: 0, movement)
+                    }
+                }
+                override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+            }
+
+            heartRateSensor?.let { sensorManager.registerListener(heartRateListener, it, SensorManager.SENSOR_DELAY_NORMAL) }
+            accelerometerSensor?.let { sensorManager.registerListener(accelerometerListener, it, SensorManager.SENSOR_DELAY_NORMAL) }
+
+            onDispose {
+                sensorManager.unregisterListener(heartRateListener)
+                sensorManager.unregisterListener(accelerometerListener)
+                userPreferences.updatePreference("Modo Deporte", enjoymentLevel)
+            }
+        }
+        onDispose {}
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(text = "Modo Deporte", fontSize = 24.sp, color = Color.Black)
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(text = "Estado: ${if (isSportModeActive) "Activo" else "Inactivo"}", fontSize = 18.sp, color = Color.Black)
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(text = "Frecuencia cardíaca: $heartRate BPM", fontSize = 18.sp, color = Color.Black)
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(text = "Movimiento: $movement", fontSize = 18.sp, color = Color.Black)
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Button(onClick = { isSportModeActive = !isSportModeActive }) {
+            Text(text = if (isSportModeActive) "Desactivar" else "Activar")
+        }
+
+        if (!isSportModeActive) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("¿Cuánto disfrutaste la actividad?", fontSize = 16.sp)
+            Slider(
+                value = enjoymentLevel.toFloat(),
+                onValueChange = { enjoymentLevel = it.toDouble() },
+                valueRange = 0f..1f,
+                steps = 10
+            )
+            Text("Nivel de disfrute: ${(enjoymentLevel * 100).toInt()}%")
+        }
+    }
+}
+
+@Composable
+fun EmergencyScreen() {
+    val context = LocalContext.current
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Red.copy(alpha = 0.8f))
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(text = "¡Emergencia!", fontSize = 24.sp, color = Color.White)
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Button(onClick = {
+            sendWhatsAppMessage("Emergencia: Se ha presionado el botón de emergencia.", context)
+        }) {
+            Text(text = "Enviar Alerta", fontSize = 18.sp)
+        }
+    }
+}
+
+fun sendWhatsAppMessage(message: String, context: Context) {
+    val intent = Intent(Intent.ACTION_SEND)
+    intent.type = "text/plain"
+    intent.putExtra(Intent.EXTRA_TEXT, message)
+    intent.putExtra("jid", "56972298992@s.whatsapp.net")
+    intent.setPackage("com.whatsapp")
+    try {
+        context.startActivity(intent)
+    } catch (e: ActivityNotFoundException) {
+        Toast.makeText(context, "WhatsApp no está instalado", Toast.LENGTH_SHORT).show()
+    }
+}
+
